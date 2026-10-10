@@ -1,0 +1,36 @@
+name: Revisar citas DIAN
+
+on:
+  schedule:
+    - cron: "30 * * * *"   # cada hora al minuto 30 (el PC revisa al minuto 0)
+  workflow_dispatch:        # permite ejecutarlo a mano desde GitHub
+
+jobs:
+  revisar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Instalar Playwright
+        run: |
+          pip install playwright
+          python -m playwright install --with-deps chromium
+      - name: Revisar cupos
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          ORIGEN: Nube
+        run: python revisar_cupos.py
+      - name: Guardar evidencia
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: revision-${{ github.run_number }}
+          path: |
+            historial_revisiones.csv
+            analisis_revisiones.md
+            cupo_encontrado.png
+          if-no-files-found: ignore
+          retention-days: 7
