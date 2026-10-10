@@ -22,6 +22,7 @@ jobs:
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           ORIGEN: Nube
+          NOTIFICAR_SIEMPRE: "1"   # resumen cada hora aunque no haya citas
         run: python revisar_cupos.py
       - name: Guardar evidencia
         if: always()

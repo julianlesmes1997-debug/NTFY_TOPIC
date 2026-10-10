@@ -151,6 +151,9 @@ def main():
         if len(ultimas) == 2 and all(d.startswith("ERROR") for d in ultimas):
             notificar("Revisión DIAN fallando", f"[{ORIGEN}] 3 revisiones seguidas con error: {r['detalle'][:120]}", "high")
         return 1
+    elif os.environ.get("NOTIFICAR_SIEMPRE") == "1":
+        notificar("DIAN: sin citas todavía",
+                  f"[{ORIGEN}] {r['fecha']} - Videoatención > Devoluciones sigue sin cupos. Próxima revisión en 1 hora.")
     return 0
 
 
