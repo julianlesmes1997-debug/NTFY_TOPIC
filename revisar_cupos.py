@@ -18,6 +18,7 @@ from playwright.sync_api import sync_playwright
 
 URL = "https://agendamiento.dian.gov.co"
 PASOS = ("Agendar cita", "Persona Natural", "Videoatención")
+OPCIONES = ("Persona Natural", "Persona Jurídica", "Presencial", "Videoatención")
 SERVICIO = "Devoluciones."
 SIN_CUPO = "no se encontraron especialidades"
 BASE = Path(__file__).resolve().parent
@@ -32,6 +33,14 @@ JS_BUSCAR = """(t) => { const n = s => (s||'').normalize('NFD').replace(/[\\u030
   c.sort((a,b) => { const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect(); return ra.width*ra.height - rb.width*rb.height; });
   if (!c.length) return null; c[0].scrollIntoView({block:'center'}); const r = c[0].getBoundingClientRect();
   return [r.x + r.width/2, r.y + r.height/2]; }"""
+
+# Color de fondo de la tarjeta que contiene el texto (primer ancestro con fondo)
+JS_FONDO = """(t) => { const n = s => (s||'').replace(/\\s+/g,' ').trim();
+  const el = [...document.querySelectorAll('body *')].filter(e => n(e.innerText) === t && e.getBoundingClientRect().height > 0)
+    .sort((a,b) => a.getBoundingClientRect().height - b.getBoundingClientRect().height)[0];
+  for (let p = el, k = 0; p && k < 8; p = p.parentElement, k++) { const c = getComputedStyle(p).backgroundColor;
+    if (c && c !== 'rgba(0, 0, 0, 0)') return c; }
+  return ''; }"""
 
 
 def ntfy_topic():
@@ -81,17 +90,31 @@ def servicios_visibles(texto):
     return [" ".join(l.split()) for l in bloque.split("\n") if l.strip()]
 
 
+def seleccionada(page, texto):
+    """La tarjeta elegida se pinta azul (rgb 57,183,217); las demas quedan blancas."""
+    return page.evaluate(JS_FONDO, texto) == "rgb(57, 183, 217)"
+
+
 def revisar():
     r = {"fecha": datetime.now(COLOMBIA).strftime("%Y-%m-%d %H:%M"), "origen": ORIGEN,
-         "hay_cupo": False, "detalle": "", "servicios": []}
+         "hay_cupo": False, "detalle": "", "seleccion": [], "servicios": []}
     with sync_playwright() as p:
         nav = p.chromium.launch(headless=True)
         page = nav.new_page(viewport={"width": 1366, "height": 900}, locale="es-CO")
         try:
             page.goto(URL, wait_until="networkidle", timeout=90000)
             for paso in PASOS:
-                if not clic_texto(page, paso):
-                    raise RuntimeError(f"No se encontro la opcion '{paso}'")
+                for _ in range(3):  # reintenta si la tarjeta no quedo marcada
+                    if not clic_texto(page, paso):
+                        raise RuntimeError(f"No se encontro la opcion '{paso}'")
+                    if paso == PASOS[0] or seleccionada(page, paso):
+                        break
+                else:
+                    raise RuntimeError(f"La opcion '{paso}' no quedo seleccionada")
+            r["seleccion"] = [t for t in OPCIONES if seleccionada(page, t)]
+            if r["seleccion"] != list(PASOS[1:]):
+                raise RuntimeError(f"Seleccion incorrecta: {r['seleccion']}")
+            page.screenshot(path=str(BASE / "seleccion.png"), full_page=True)
             r["servicios"] = servicios_visibles(page.inner_text("body"))
             if not clic_texto(page, SERVICIO):
                 raise RuntimeError(f"'{SERVICIO}' ya no aparece en Videoatencion")
@@ -153,7 +176,8 @@ def main():
         return 1
     elif os.environ.get("NOTIFICAR_SIEMPRE") == "1":
         notificar("DIAN: sin citas todavía",
-                  f"[{ORIGEN}] {r['fecha']} - Videoatención > Devoluciones sigue sin cupos. Próxima revisión en 1 hora.")
+                  f"[{ORIGEN}] {r['fecha']} - {' > '.join(r['seleccion'])} > Devoluciones: sin cupos. "
+                  "Próxima revisión en 1 hora.")
     return 0
 
 

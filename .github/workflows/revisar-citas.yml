@@ -33,5 +33,6 @@ jobs:
             historial_revisiones.csv
             analisis_revisiones.md
             cupo_encontrado.png
+            seleccion.png
           if-no-files-found: ignore
           retention-days: 7
