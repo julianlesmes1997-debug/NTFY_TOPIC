@@ -10,6 +10,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -124,6 +125,11 @@ def revisar():
                 r["hay_cupo"] = True
                 r["detalle"] = "HAY CUPO: Devoluciones ya no muestra el aviso de sin especialidades"
                 page.screenshot(path=str(BASE / "cupo_encontrado.png"), full_page=True)
+                texto = page.inner_text("body")
+                ini = texto.rfind("Trámite")
+                if ini >= 0:  # opciones de tramite que ofrece la DIAN en ese momento
+                    bloque = texto[ini + len("Trámite"):texto.find("Anterior", ini)]
+                    r["tramites"] = [" ".join(l.split()) for l in bloque.split("\n") if l.strip()][:6]
         except Exception as e:
             r["detalle"] = f"ERROR: {str(e).splitlines()[0][:200]}"
         finally:
@@ -146,6 +152,9 @@ def guardar(r, hist):
             w.writerow(["fecha", "origen", "hay_cupo", "detalle", "servicios"])
         w.writerow([r["fecha"], r["origen"], "SI" if r["hay_cupo"] else "NO", r["detalle"], " | ".join(r["servicios"])])
 
+    # Con revisiones cada 5 min, el analisis solo se escribe si cambia el resultado o cambia la hora
+    if hist and hist[-1]["detalle"] == r["detalle"] and hist[-1]["fecha"][:13] == r["fecha"][:13]:
+        return
     total = len(hist) + 1
     con_cupo = sum(h["hay_cupo"] == "SI" for h in hist) + r["hay_cupo"]
     errores = sum(h["detalle"].startswith("ERROR") for h in hist) + r["detalle"].startswith("ERROR")
@@ -161,13 +170,20 @@ def guardar(r, hist):
 
 def main():
     hist = leer_historial()
-    r = revisar()
+    for intento in range(3):  # la pagina de la DIAN a veces no carga a la primera
+        r = revisar()
+        if not r["detalle"].startswith("ERROR"):
+            break
+        print(f"Intento {intento + 1} con error: {r['detalle']}")
+        time.sleep(20)
     guardar(r, hist)
     print(json.dumps(r, ensure_ascii=False, indent=2))
 
     if r["hay_cupo"]:
+        tramites = f" Trámites: {', '.join(r['tramites'])}." if r.get("tramites") else ""
         notificar("Hay citas DIAN - Devoluciones",
-                  f"[{ORIGEN}] Apareció disponibilidad en Videoatención > Devoluciones. Ejecuta ejecutar.bat para agendar.",
+                  f"[{ORIGEN}] {r['fecha']} Hay disponibilidad en Videoatención > Devoluciones.{tramites} "
+                  "Agenda YA con ejecutar.bat: los cupos se agotan rápido.",
                   "urgent")
     elif r["detalle"].startswith("ERROR"):
         ultimas = [h["detalle"] for h in hist if h.get("origen", "PC") == ORIGEN][-2:]
@@ -177,7 +193,7 @@ def main():
     elif os.environ.get("NOTIFICAR_SIEMPRE") == "1":
         notificar("DIAN: sin citas todavía",
                   f"[{ORIGEN}] {r['fecha']} - {' > '.join(r['seleccion'])} > Devoluciones: sin cupos. "
-                  "Próxima revisión en 1 hora.")
+                  "Sigo revisando cada 5 min; próximo resumen en 1 hora.")
     return 0
 
 

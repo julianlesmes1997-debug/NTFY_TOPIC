@@ -2,8 +2,13 @@ name: Revisar citas DIAN
 
 on:
   schedule:
-    - cron: "30 * * * *"   # cada hora al minuto 30 (el PC revisa al minuto 0)
-  workflow_dispatch:        # permite ejecutarlo a mano desde GitHub
+    - cron: "*/5 * * * *"   # revision cada 5 min (GitHub puede retrasarla unos minutos)
+    - cron: "2 * * * *"     # revision + resumen "sin citas" una vez por hora
+  workflow_dispatch:          # permite ejecutarlo a mano desde GitHub
+
+concurrency:                  # nunca dos revisiones al tiempo
+  group: revisar-citas
+  cancel-in-progress: false
 
 jobs:
   revisar:
@@ -14,6 +19,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: .github/workflows/revisar-citas.yml
+      - name: Cache del navegador
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-v1
       - name: Instalar Playwright
         run: |
           pip install playwright
@@ -22,7 +34,8 @@ jobs:
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           ORIGEN: Nube
-          NOTIFICAR_SIEMPRE: "1"   # resumen cada hora aunque no haya citas
+          # resumen horario solo en la ejecucion de las :02 o al lanzarlo a mano
+          NOTIFICAR_SIEMPRE: ${{ (github.event.schedule == '2 * * * *' || github.event_name == 'workflow_dispatch') && '1' || '0' }}
         run: python revisar_cupos.py
       - name: Guardar evidencia
         if: always()
@@ -35,4 +48,4 @@ jobs:
             cupo_encontrado.png
             seleccion.png
           if-no-files-found: ignore
-          retention-days: 7
+          retention-days: 3
