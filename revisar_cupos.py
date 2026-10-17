@@ -165,20 +165,30 @@ def guardar(r, hist):
         f.write("\n".join(lineas) + "\n\n")
 
 
-def esperar_hora_en_punto():
-    """En la nube GitHub arranca tarde: se lanza a los :30 y aqui espera hasta la hora en punto.
-    Si ya paso la hora en punto, revisa de inmediato."""
+INTERVALO = 20  # minutos entre revisiones: :00, :20 y :40
+
+
+def esperar_marca():
+    """En la nube GitHub arranca tarde y a destiempo: si faltan menos de 15 min para la
+    siguiente marca (:00, :20, :40) espera hasta ella; si no, revisa de inmediato."""
     ahora = datetime.now(COLOMBIA)
-    if ahora.minute >= 25:
-        siguiente = ahora.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+    resto = ahora.minute % INTERVALO
+    if resto >= INTERVALO - 15 and resto > 0:
+        siguiente = ahora.replace(second=0, microsecond=0) + timedelta(minutes=INTERVALO - resto)
         espera = (siguiente - ahora).total_seconds()
         print(f"Esperando {espera / 60:.1f} min hasta las {siguiente:%H:%M}...", flush=True)
         time.sleep(espera)
 
 
+def toca_resumen():
+    """Resumen 'sin citas': '1' siempre; 'hora' solo en la revision de la hora en punto."""
+    modo = os.environ.get("NOTIFICAR_SIEMPRE", "")
+    return modo == "1" or (modo == "hora" and datetime.now(COLOMBIA).minute < INTERVALO)
+
+
 def main():
     if os.environ.get("ESPERAR_HORA_EN_PUNTO") == "1":
-        esperar_hora_en_punto()
+        esperar_marca()
     hist = leer_historial()
     for intento in range(3):  # la pagina de la DIAN a veces no carga a la primera
         r = revisar()  # la fecha de r es la hora real de la revision (tras la espera)
@@ -200,10 +210,10 @@ def main():
         if len(ultimas) == 2 and all(d.startswith("ERROR") for d in ultimas):
             notificar("Revisión DIAN fallando", f"[{ORIGEN}] 3 revisiones seguidas con error: {r['detalle'][:120]}", "high")
         return 1
-    elif os.environ.get("NOTIFICAR_SIEMPRE") == "1":
+    elif toca_resumen():
         notificar("DIAN: sin citas todavía",
                   f"[{ORIGEN}] {r['fecha']} - {' > '.join(r['seleccion'])} > Devoluciones: sin cupos. "
-                  "Próxima revisión en 1 hora.")
+                  f"Reviso cada {INTERVALO} min; próximo resumen en 1 hora.")
     return 0
 
 

@@ -2,9 +2,9 @@ name: Revisar citas DIAN
 
 on:
   schedule:
-    # Una revision por hora. GitHub arranca con ~25 min de retraso, por eso se lanza
-    # a los :30 y el script espera hasta la hora en punto (hora Colombia) para revisar.
-    - cron: "30 * * * *"
+    # Revision cada 20 min. GitHub arranca con retraso, por eso el script espera
+    # hasta la siguiente marca (:00, :20, :40 hora Colombia) si esta cerca.
+    - cron: "*/20 * * * *"
   workflow_dispatch:          # permite ejecutarlo a mano desde GitHub
 
 concurrency:                  # nunca dos revisiones al tiempo
@@ -14,7 +14,7 @@ concurrency:                  # nunca dos revisiones al tiempo
 jobs:
   revisar:
     runs-on: ubuntu-latest
-    timeout-minutes: 45   # incluye la espera hasta la hora en punto
+    timeout-minutes: 25   # incluye la espera hasta la marca
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -35,8 +35,9 @@ jobs:
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           ORIGEN: Nube
-          NOTIFICAR_SIEMPRE: "1"   # resumen cada hora aunque no haya citas
-          # al lanzarlo a mano revisa de inmediato, sin esperar la hora en punto
+          # resumen "sin citas" solo en la revision de la hora en punto; a mano, siempre
+          NOTIFICAR_SIEMPRE: ${{ github.event_name == 'schedule' && 'hora' || '1' }}
+          # al lanzarlo a mano revisa de inmediato, sin esperar la marca
           ESPERAR_HORA_EN_PUNTO: ${{ github.event_name == 'schedule' && '1' || '0' }}
         run: python revisar_cupos.py
       - name: Guardar evidencia
