@@ -152,9 +152,6 @@ def guardar(r, hist):
             w.writerow(["fecha", "origen", "hay_cupo", "detalle", "servicios"])
         w.writerow([r["fecha"], r["origen"], "SI" if r["hay_cupo"] else "NO", r["detalle"], " | ".join(r["servicios"])])
 
-    # Con revisiones cada 5 min, el analisis solo se escribe si cambia el resultado o cambia la hora
-    if hist and hist[-1]["detalle"] == r["detalle"] and hist[-1]["fecha"][:13] == r["fecha"][:13]:
-        return
     total = len(hist) + 1
     con_cupo = sum(h["hay_cupo"] == "SI" for h in hist) + r["hay_cupo"]
     errores = sum(h["detalle"].startswith("ERROR") for h in hist) + r["detalle"].startswith("ERROR")
@@ -168,10 +165,23 @@ def guardar(r, hist):
         f.write("\n".join(lineas) + "\n\n")
 
 
+def esperar_hora_en_punto():
+    """En la nube GitHub arranca tarde: se lanza a los :30 y aqui espera hasta la hora en punto.
+    Si ya paso la hora en punto, revisa de inmediato."""
+    ahora = datetime.now(COLOMBIA)
+    if ahora.minute >= 25:
+        siguiente = ahora.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+        espera = (siguiente - ahora).total_seconds()
+        print(f"Esperando {espera / 60:.1f} min hasta las {siguiente:%H:%M}...", flush=True)
+        time.sleep(espera)
+
+
 def main():
+    if os.environ.get("ESPERAR_HORA_EN_PUNTO") == "1":
+        esperar_hora_en_punto()
     hist = leer_historial()
     for intento in range(3):  # la pagina de la DIAN a veces no carga a la primera
-        r = revisar()
+        r = revisar()  # la fecha de r es la hora real de la revision (tras la espera)
         if not r["detalle"].startswith("ERROR"):
             break
         print(f"Intento {intento + 1} con error: {r['detalle']}")
@@ -193,7 +203,7 @@ def main():
     elif os.environ.get("NOTIFICAR_SIEMPRE") == "1":
         notificar("DIAN: sin citas todavía",
                   f"[{ORIGEN}] {r['fecha']} - {' > '.join(r['seleccion'])} > Devoluciones: sin cupos. "
-                  "Sigo revisando cada 5 min; próximo resumen en 1 hora.")
+                  "Próxima revisión en 1 hora.")
     return 0
 
 
