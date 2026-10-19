@@ -238,10 +238,14 @@ def una_revision():
 
     if r["hay_cupo"]:
         tramites = f" Trámites: {', '.join(r['tramites'])}." if r.get("tramites") else ""
-        notificar("Hay citas DIAN - Devoluciones",
-                  f"[{ORIGEN}] {r['fecha']} Hay disponibilidad en Videoatención > Devoluciones.{tramites} "
-                  "Agenda YA con ejecutar.bat: los cupos se agotan rápido.",
-                  "urgent")
+        if any("bogot" in t.lower() for t in r.get("tramites", [])):  # alarma solo para Bogota
+            notificar("Hay citas DIAN en BOGOTÁ - Devoluciones",
+                      f"[{ORIGEN}] {r['fecha']} Hay disponibilidad en Videoatención > Devoluciones.{tramites} "
+                      "Agenda YA con ejecutar.bat: los cupos se agotan rápido.",
+                      "urgent")
+        else:
+            notificar("Cupo DIAN en otra ciudad (no Bogotá)",
+                      f"[{ORIGEN}] {r['fecha']} Videoatención > Devoluciones.{tramites}")
     elif r["detalle"].startswith("ERROR"):
         ultimas = [h["detalle"] for h in hist if h.get("origen", "PC") == ORIGEN][-2:]
         if len(ultimas) == 2 and all(d.startswith("ERROR") for d in ultimas):
