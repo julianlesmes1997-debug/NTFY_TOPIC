@@ -152,6 +152,9 @@ def guardar(r, hist):
             w.writerow(["fecha", "origen", "hay_cupo", "detalle", "servicios"])
         w.writerow([r["fecha"], r["origen"], "SI" if r["hay_cupo"] else "NO", r["detalle"], " | ".join(r["servicios"])])
 
+    # Con revisiones cada 5 min, el analisis solo se escribe si cambia el resultado o cambia la hora
+    if hist and hist[-1]["detalle"] == r["detalle"] and hist[-1]["fecha"][:13] == r["fecha"][:13]:
+        return
     total = len(hist) + 1
     con_cupo = sum(h["hay_cupo"] == "SI" for h in hist) + r["hay_cupo"]
     errores = sum(h["detalle"].startswith("ERROR") for h in hist) + r["detalle"].startswith("ERROR")
@@ -165,19 +168,16 @@ def guardar(r, hist):
         f.write("\n".join(lineas) + "\n\n")
 
 
-INTERVALO = 20  # minutos entre revisiones: :00, :20 y :40
+INTERVALO = 5  # minutos entre revisiones: :00, :05, :10 ...
 
 
 def esperar_marca():
-    """En la nube GitHub arranca tarde y a destiempo: si faltan menos de 15 min para la
-    siguiente marca (:00, :20, :40) espera hasta ella; si no, revisa de inmediato."""
+    """Espera hasta la siguiente marca de INTERVALO minutos (hora Colombia)."""
     ahora = datetime.now(COLOMBIA)
-    resto = ahora.minute % INTERVALO
-    if resto >= INTERVALO - 15 and resto > 0:
-        siguiente = ahora.replace(second=0, microsecond=0) + timedelta(minutes=INTERVALO - resto)
-        espera = (siguiente - ahora).total_seconds()
-        print(f"Esperando {espera / 60:.1f} min hasta las {siguiente:%H:%M}...", flush=True)
-        time.sleep(espera)
+    siguiente = ahora.replace(second=0, microsecond=0) + timedelta(minutes=INTERVALO - ahora.minute % INTERVALO)
+    espera = (siguiente - ahora).total_seconds()
+    print(f"Esperando {espera / 60:.1f} min hasta las {siguiente:%H:%M}...", flush=True)
+    time.sleep(espera)
 
 
 def toca_resumen():
@@ -187,17 +187,29 @@ def toca_resumen():
 
 
 def main():
-    if os.environ.get("ESPERAR_HORA_EN_PUNTO") == "1":
+    """Una revision; o, con BUCLE_MINUTOS (nube), una revision en cada marca durante ese tiempo.
+    En la nube GitHub no cumple horarios cortos, por eso el ritmo lo lleva este ciclo."""
+    bucle = int(os.environ.get("BUCLE_MINUTOS") or 0)
+    if not bucle:
+        return una_revision()
+    fin = time.monotonic() + bucle * 60
+    while True:
         esperar_marca()
+        if time.monotonic() > fin:
+            return 0
+        una_revision()
+
+
+def una_revision():
     hist = leer_historial()
-    for intento in range(3):  # la pagina de la DIAN a veces no carga a la primera
-        r = revisar()  # la fecha de r es la hora real de la revision (tras la espera)
+    for intento in range(2):  # la pagina de la DIAN a veces no carga a la primera
+        r = revisar()
         if not r["detalle"].startswith("ERROR"):
             break
         print(f"Intento {intento + 1} con error: {r['detalle']}")
-        time.sleep(20)
+        time.sleep(15)
     guardar(r, hist)
-    print(json.dumps(r, ensure_ascii=False, indent=2))
+    print(json.dumps(r, ensure_ascii=False, indent=2), flush=True)
 
     if r["hay_cupo"]:
         tramites = f" Trámites: {', '.join(r['tramites'])}." if r.get("tramites") else ""
