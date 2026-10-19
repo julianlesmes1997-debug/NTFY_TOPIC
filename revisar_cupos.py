@@ -96,6 +96,31 @@ def seleccionada(page, texto):
     return page.evaluate(JS_FONDO, texto) == "rgb(57, 183, 217)"
 
 
+def tramites_visibles(texto):
+    """Opciones listadas bajo el encabezado 'Trámite' (solo aparecen cuando hay cupo)."""
+    ini = texto.rfind("Trámite")
+    if ini < 0:
+        return []
+    fin = texto.find("Anterior", ini)
+    bloque = texto[ini + len("Trámite"):fin if fin > 0 else None]
+    return [" ".join(l.split()) for l in bloque.split("\n") if l.strip()][:6]
+
+
+def esperar_resultado(page, segundos=60):
+    """Tras elegir Devoluciones la DIAN muestra 'Cargando'. Solo hay dos respuestas validas:
+    el aviso de 'sin especialidades' o la lista de tramites. Mientras no llegue ninguna, se espera;
+    si no llega, devuelve None (nunca se asume cupo por una pagina que no termino de cargar)."""
+    for _ in range(segundos):
+        texto = page.inner_text("body")
+        if SIN_CUPO in texto.lower():
+            return "sin_cupo"
+        tramites = tramites_visibles(texto)
+        if tramites:
+            return tramites
+        page.wait_for_timeout(1000)
+    return None
+
+
 def revisar():
     r = {"fecha": datetime.now(COLOMBIA).strftime("%Y-%m-%d %H:%M"), "origen": ORIGEN,
          "hay_cupo": False, "detalle": "", "seleccion": [], "servicios": []}
@@ -119,17 +144,17 @@ def revisar():
             r["servicios"] = servicios_visibles(page.inner_text("body"))
             if not clic_texto(page, SERVICIO):
                 raise RuntimeError(f"'{SERVICIO}' ya no aparece en Videoatencion")
-            if SIN_CUPO in page.inner_text("body").lower():
+            resultado = esperar_resultado(page)
+            if resultado == "sin_cupo":
                 r["detalle"] = "Sin cupos (No se encontraron especialidades)"
-            else:
+            elif resultado:
                 r["hay_cupo"] = True
-                r["detalle"] = "HAY CUPO: Devoluciones ya no muestra el aviso de sin especialidades"
+                r["tramites"] = resultado
+                r["detalle"] = "HAY CUPO: la DIAN muestra tramites para Devoluciones"
                 page.screenshot(path=str(BASE / "cupo_encontrado.png"), full_page=True)
-                texto = page.inner_text("body")
-                ini = texto.rfind("Trámite")
-                if ini >= 0:  # opciones de tramite que ofrece la DIAN en ese momento
-                    bloque = texto[ini + len("Trámite"):texto.find("Anterior", ini)]
-                    r["tramites"] = [" ".join(l.split()) for l in bloque.split("\n") if l.strip()][:6]
+            else:
+                page.screenshot(path=str(BASE / "sin_respuesta.png"), full_page=True)
+                raise RuntimeError("La DIAN no respondio en 60 s (seguia 'Cargando')")
         except Exception as e:
             r["detalle"] = f"ERROR: {str(e).splitlines()[0][:200]}"
         finally:

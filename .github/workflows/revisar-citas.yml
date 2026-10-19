@@ -1,4 +1,4 @@
-name: Revisar citas DIAN
+﻿name: Revisar citas DIAN
 
 on:
   schedule:
@@ -51,5 +51,6 @@ jobs:
             analisis_revisiones.md
             cupo_encontrado.png
             seleccion.png
+            sin_respuesta.png
           if-no-files-found: ignore
           retention-days: 3
