@@ -2,7 +2,7 @@
 
 on:
   schedule:
-    # GitHub no cumple horarios cortos, asi que cada ejecucion revisa cada 5 min
+    # GitHub no cumple horarios cortos, asi que cada ejecucion revisa cada 3 min
     # durante 55 min (BUCLE_MINUTOS). Se programa cada 15 min para que siempre haya
     # una ejecucion en cola que arranque apenas termine la anterior (ver concurrency).
     - cron: "*/15 * * * *"
@@ -40,6 +40,7 @@ jobs:
           NOTIFICAR_SIEMPRE: ${{ github.event_name == 'schedule' && 'hora' || '1' }}
           # programado: ciclo de 55 min; a mano: una sola revision inmediata
           BUCLE_MINUTOS: ${{ github.event_name == 'schedule' && '55' || '0' }}
+          INTERVALO_MIN: "3"   # revision cada 3 min (:00, :03, :06 ...)
         run: python revisar_cupos.py
       - name: Guardar evidencia
         if: always()

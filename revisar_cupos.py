@@ -193,7 +193,8 @@ def guardar(r, hist):
         f.write("\n".join(lineas) + "\n\n")
 
 
-INTERVALO = 5  # minutos entre revisiones: :00, :05, :10 ...
+# minutos entre revisiones del ciclo (debe dividir 60): la nube usa 3, por defecto 5
+INTERVALO = int(os.environ.get("INTERVALO_MIN") or 5)
 
 
 def esperar_marca():
