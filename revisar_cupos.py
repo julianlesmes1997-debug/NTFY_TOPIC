@@ -248,8 +248,9 @@ def una_revision():
             notificar("Cupo DIAN en otra ciudad (no Bogotá)",
                       f"[{ORIGEN}] {r['fecha']} Videoatención > Devoluciones.{tramites}")
     elif r["detalle"].startswith("ERROR"):
-        ultimas = [h["detalle"] for h in hist if h.get("origen", "PC") == ORIGEN][-2:]
-        if len(ultimas) == 2 and all(d.startswith("ERROR") for d in ultimas):
+        # avisar una sola vez por racha: justo en el 3er error seguido, no en los siguientes
+        ultimas = [h["detalle"].startswith("ERROR") for h in hist if h.get("origen", "PC") == ORIGEN][-3:]
+        if ultimas[-2:] == [True, True] and (len(ultimas) < 3 or not ultimas[0]):
             notificar("Revisión DIAN fallando", f"[{ORIGEN}] 3 revisiones seguidas con error: {r['detalle'][:120]}", "high")
         return 1
     elif toca_resumen():
