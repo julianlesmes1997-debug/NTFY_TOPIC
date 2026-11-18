@@ -121,45 +121,52 @@ def esperar_resultado(page, segundos=60):
     return None
 
 
-def revisar():
+def revisar(nav=None):
+    """Una revision. Con `nav` reutiliza un navegador ya abierto (vigilante del PC: mas rapido)."""
+    if nav is None:
+        with sync_playwright() as p:
+            navegador = p.chromium.launch(headless=True)
+            try:
+                return revisar(navegador)
+            finally:
+                navegador.close()
     r = {"fecha": datetime.now(COLOMBIA).strftime("%Y-%m-%d %H:%M"), "origen": ORIGEN,
          "hay_cupo": False, "detalle": "", "seleccion": [], "servicios": []}
-    with sync_playwright() as p:
-        nav = p.chromium.launch(headless=True)
-        page = nav.new_page(viewport={"width": 1366, "height": 900}, locale="es-CO")
-        try:
-            page.goto(URL, wait_until="networkidle", timeout=90000)
-            for paso in PASOS:
-                for _ in range(3):  # reintenta si la tarjeta no quedo marcada
-                    # la portada de la DIAN a veces tarda mas de 20 s en mostrar el menu
-                    if not clic_texto(page, paso, espera=60 if paso == PASOS[0] else 20):
-                        raise RuntimeError(f"No se encontro la opcion '{paso}'")
-                    if paso == PASOS[0] or seleccionada(page, paso):
-                        break
-                else:
-                    raise RuntimeError(f"La opcion '{paso}' no quedo seleccionada")
-            r["seleccion"] = [t for t in OPCIONES if seleccionada(page, t)]
-            if r["seleccion"] != list(PASOS[1:]):
-                raise RuntimeError(f"Seleccion incorrecta: {r['seleccion']}")
-            page.screenshot(path=str(BASE / "seleccion.png"), full_page=True)
-            r["servicios"] = servicios_visibles(page.inner_text("body"))
-            if not clic_texto(page, SERVICIO):
-                raise RuntimeError(f"'{SERVICIO}' ya no aparece en Videoatencion")
-            resultado = esperar_resultado(page)
-            if resultado == "sin_cupo":
-                r["detalle"] = "Sin cupos (No se encontraron especialidades)"
-            elif resultado:
-                r["hay_cupo"] = True
-                r["tramites"] = resultado
-                r["detalle"] = "HAY CUPO: la DIAN muestra tramites para Devoluciones"
-                page.screenshot(path=str(BASE / "cupo_encontrado.png"), full_page=True)
+    page = nav.new_page(viewport={"width": 1366, "height": 900}, locale="es-CO")
+    try:
+        page.goto(URL, wait_until="networkidle", timeout=90000)
+        for paso in PASOS:
+            for _ in range(3):  # reintenta si la tarjeta no quedo marcada
+                # la portada de la DIAN a veces tarda mas de 20 s en mostrar el menu
+                if not clic_texto(page, paso, espera=60 if paso == PASOS[0] else 20):
+                    raise RuntimeError(f"No se encontro la opcion '{paso}'")
+                if paso == PASOS[0] or seleccionada(page, paso):
+                    break
             else:
-                page.screenshot(path=str(BASE / "sin_respuesta.png"), full_page=True)
-                raise RuntimeError("La DIAN no respondio en 60 s (seguia 'Cargando')")
-        except Exception as e:
-            r["detalle"] = f"ERROR: {str(e).splitlines()[0][:200]}"
-        finally:
-            nav.close()
+                raise RuntimeError(f"La opcion '{paso}' no quedo seleccionada")
+        r["seleccion"] = [t for t in OPCIONES if seleccionada(page, t)]
+        if r["seleccion"] != list(PASOS[1:]):
+            raise RuntimeError(f"Seleccion incorrecta: {r['seleccion']}")
+        page.screenshot(path=str(BASE / "seleccion.png"), full_page=True)
+        r["servicios"] = servicios_visibles(page.inner_text("body"))
+        if not clic_texto(page, SERVICIO):
+            raise RuntimeError(f"'{SERVICIO}' ya no aparece en Videoatencion")
+        resultado = esperar_resultado(page)
+        if resultado == "sin_cupo":
+            r["detalle"] = "Sin cupos (No se encontraron especialidades)"
+        elif resultado:
+            r["hay_cupo"] = True
+            r["tramites"] = resultado
+            r["bogota"] = any("bogot" in t.lower() for t in resultado)
+            r["detalle"] = "HAY CUPO en " + ("Bogota" if r["bogota"] else "otra ciudad")
+            page.screenshot(path=str(BASE / "cupo_encontrado.png"), full_page=True)
+        else:
+            page.screenshot(path=str(BASE / "sin_respuesta.png"), full_page=True)
+            raise RuntimeError("La DIAN no respondio en 60 s (seguia 'Cargando')")
+    except Exception as e:
+        r["detalle"] = f"ERROR: {str(e).splitlines()[0][:200]}"
+    finally:
+        page.close()
     return r
 
 
@@ -198,10 +205,11 @@ def guardar(r, hist):
 INTERVALO = int(os.environ.get("INTERVALO_MIN") or 5)
 
 
-def esperar_marca():
-    """Espera hasta la siguiente marca de INTERVALO minutos (hora Colombia)."""
+def esperar_marca(minutos=None):
+    """Espera hasta la siguiente marca de `minutos` (por defecto INTERVALO), hora Colombia."""
+    minutos = minutos or INTERVALO
     ahora = datetime.now(COLOMBIA)
-    siguiente = ahora.replace(second=0, microsecond=0) + timedelta(minutes=INTERVALO - ahora.minute % INTERVALO)
+    siguiente = ahora.replace(second=0, microsecond=0) + timedelta(minutes=minutos - ahora.minute % minutos)
     espera = (siguiente - ahora).total_seconds()
     print(f"Esperando {espera / 60:.1f} min hasta las {siguiente:%H:%M}...", flush=True)
     time.sleep(espera)
@@ -213,12 +221,47 @@ def toca_resumen():
     return modo == "1" or (modo == "hora" and datetime.now(COLOMBIA).minute < INTERVALO)
 
 
+def horario_oficina(ahora):
+    """Lunes a viernes de 7:00 a 18:00: cuando la DIAN ha publicado todos los cupos vistos."""
+    return ahora.weekday() < 5 and 7 <= ahora.hour < 18
+
+
+def vigilar():
+    """Vigilante del PC: proceso continuo que revisa cada 1 min en horario de oficina y cada 5 min
+    el resto, reutilizando el navegador. Si aparece cupo en Bogota lanza agendar_auto.py."""
+    agendador, ultimo_lanzamiento = None, 0.0
+    with sync_playwright() as p:
+        nav, abierto_desde = p.chromium.launch(headless=True), time.monotonic()
+        while True:
+            try:
+                r = una_revision(nav)
+            except Exception as e:  # navegador caido: se reabre
+                print(f"Reiniciando navegador: {e}", flush=True)
+                r = None
+                abierto_desde = 0.0
+            libre = agendador is None or agendador.poll() is not None
+            if r and r.get("bogota") and libre and time.monotonic() - ultimo_lanzamiento > 300:
+                with (BASE / "agendar_auto.log").open("a", encoding="utf-8") as salida:
+                    agendador = subprocess.Popen([sys.executable, "-I", str(BASE / "agendar_auto.py")],
+                                                 cwd=BASE, stdout=salida, stderr=subprocess.STDOUT)
+                ultimo_lanzamiento = time.monotonic()
+            if time.monotonic() - abierto_desde > 2 * 3600:  # renovar el navegador cada 2 h
+                try:
+                    nav.close()
+                except Exception:
+                    pass
+                nav, abierto_desde = p.chromium.launch(headless=True), time.monotonic()
+            esperar_marca(1 if horario_oficina(datetime.now(COLOMBIA)) else 5)
+
+
 def main():
-    """Una revision; o, con BUCLE_MINUTOS (nube), una revision en cada marca durante ese tiempo.
-    En la nube GitHub no cumple horarios cortos, por eso el ritmo lo lleva este ciclo."""
+    """PC: vigilante continuo. Nube (BUCLE_MINUTOS): una revision en cada marca durante ese tiempo,
+    porque GitHub no cumple horarios cortos. Otros casos (pruebas): una sola revision."""
     bucle = int(os.environ.get("BUCLE_MINUTOS") or 0)
     if not bucle:
-        return una_revision()
+        if vigilando_pc():
+            return vigilar()
+        return 1 if una_revision()["detalle"].startswith("ERROR") else 0
     fin = time.monotonic() + bucle * 60
     while True:
         esperar_marca()
@@ -227,10 +270,10 @@ def main():
         una_revision()
 
 
-def una_revision():
+def una_revision(nav=None):
     hist = leer_historial()
     for intento in range(2):  # la pagina de la DIAN a veces no carga a la primera
-        r = revisar()
+        r = revisar(nav)
         if not r["detalle"].startswith("ERROR"):
             break
         print(f"Intento {intento + 1} con error: {r['detalle']}")
@@ -238,12 +281,15 @@ def una_revision():
     guardar(r, hist)
     print(json.dumps(r, ensure_ascii=False, indent=2), flush=True)
 
-    if r["hay_cupo"]:
+    # Avisar solo cuando cambia: si la revision anterior ya veia el mismo cupo, no se repite
+    previo = next((h["detalle"] for h in reversed(hist) if h.get("origen", "PC") == ORIGEN), "")
+    if r["hay_cupo"] and previo != r["detalle"]:
         tramites = f" Trámites: {', '.join(r['tramites'])}." if r.get("tramites") else ""
-        if any("bogot" in t.lower() for t in r.get("tramites", [])):  # alarma solo para Bogota
+        if r.get("bogota"):  # alarma solo para Bogota
+            accion = ("Abriendo el formulario en tu PC para agendar automáticamente." if vigilando_pc()
+                      else "Agenda YA: los cupos se agotan rápido.")
             notificar("Hay citas DIAN en BOGOTÁ - Devoluciones",
-                      f"[{ORIGEN}] {r['fecha']} Hay disponibilidad en Videoatención > Devoluciones.{tramites} "
-                      "Agenda YA con ejecutar.bat: los cupos se agotan rápido.",
+                      f"[{ORIGEN}] {r['fecha']} Hay disponibilidad en Videoatención > Devoluciones.{tramites} {accion}",
                       "urgent")
         else:
             notificar("Cupo DIAN en otra ciudad (no Bogotá)",
@@ -253,12 +299,15 @@ def una_revision():
         ultimas = [h["detalle"].startswith("ERROR") for h in hist if h.get("origen", "PC") == ORIGEN][-3:]
         if ultimas[-2:] == [True, True] and (len(ultimas) < 3 or not ultimas[0]):
             notificar("Revisión DIAN fallando", f"[{ORIGEN}] 3 revisiones seguidas con error: {r['detalle'][:120]}", "high")
-        return 1
-    elif toca_resumen():
+    elif not r["hay_cupo"] and toca_resumen():
         notificar("DIAN: sin citas todavía",
                   f"[{ORIGEN}] {r['fecha']} - {' > '.join(r['seleccion'])} > Devoluciones: sin cupos. "
                   f"Reviso cada {INTERVALO} min; próximo resumen en 1 hora.")
-    return 0
+    return r
+
+
+def vigilando_pc():
+    return ORIGEN == "PC" and os.environ.get("GITHUB_ACTIONS") != "true"
 
 
 if __name__ == "__main__":
