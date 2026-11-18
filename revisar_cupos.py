@@ -131,7 +131,8 @@ def revisar():
             page.goto(URL, wait_until="networkidle", timeout=90000)
             for paso in PASOS:
                 for _ in range(3):  # reintenta si la tarjeta no quedo marcada
-                    if not clic_texto(page, paso):
+                    # la portada de la DIAN a veces tarda mas de 20 s en mostrar el menu
+                    if not clic_texto(page, paso, espera=60 if paso == PASOS[0] else 20):
                         raise RuntimeError(f"No se encontro la opcion '{paso}'")
                     if paso == PASOS[0] or seleccionada(page, paso):
                         break
