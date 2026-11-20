@@ -11,6 +11,7 @@ import os
 import subprocess
 import sys
 import time
+import unicodedata
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -22,6 +23,9 @@ PASOS = ("Agendar cita", "Persona Natural", "Videoatención")
 OPCIONES = ("Persona Natural", "Persona Jurídica", "Presencial", "Videoatención")
 SERVICIO = "Devoluciones."
 SIN_CUPO = "no se encontraron especialidades"
+# Tramite buscado: Bogota "Solicitud de devolucion y/o compensacion Vehiculos electricos o
+# Hibridos persona natural". Debe contener todas estas palabras (sin tildes, en minuscula).
+OBJETIVO = ("bogota", "vehiculo")
 BASE = Path(__file__).resolve().parent
 HIST = BASE / "historial_revisiones.csv"
 ANALISIS = BASE / "analisis_revisiones.md"
@@ -73,7 +77,12 @@ def notificar(titulo, mensaje, prioridad="default"):
 
 def clic_texto(page, texto, espera=20):
     for _ in range(espera):
-        xy = page.evaluate(JS_BUSCAR, texto)
+        try:
+            xy = page.evaluate(JS_BUSCAR, texto)
+        except Exception as e:  # la DIAN a veces recarga la pagina sola: esperar y reintentar
+            if "context was destroyed" not in str(e) and "navigat" not in str(e):
+                raise
+            xy = None
         if xy:
             page.mouse.click(*xy)
             page.wait_for_timeout(2500)
@@ -89,6 +98,11 @@ def servicios_visibles(texto):
     fin = texto.find("Anterior", ini)
     bloque = texto[ini + len("Seleccione el tipo de servicio"):fin if fin > 0 else None]
     return [" ".join(l.split()) for l in bloque.split("\n") if l.strip()]
+
+
+def es_objetivo(tramite):
+    sin_tildes = "".join(c for c in unicodedata.normalize("NFD", tramite.lower()) if unicodedata.category(c) != "Mn")
+    return all(k in sin_tildes for k in OBJETIVO)
 
 
 def seleccionada(page, texto):
@@ -111,7 +125,11 @@ def esperar_resultado(page, segundos=60):
     el aviso de 'sin especialidades' o la lista de tramites. Mientras no llegue ninguna, se espera;
     si no llega, devuelve None (nunca se asume cupo por una pagina que no termino de cargar)."""
     for _ in range(segundos):
-        texto = page.inner_text("body")
+        try:
+            texto = page.inner_text("body")
+        except Exception:  # recarga de la pagina en curso
+            page.wait_for_timeout(1000)
+            continue
         if SIN_CUPO in texto.lower():
             return "sin_cupo"
         tramites = tramites_visibles(texto)
@@ -121,13 +139,14 @@ def esperar_resultado(page, segundos=60):
     return None
 
 
-def revisar(nav=None):
-    """Una revision. Con `nav` reutiliza un navegador ya abierto (vigilante del PC: mas rapido)."""
+def revisar(nav=None, agendar=False):
+    """Una revision. Con `nav` reutiliza un navegador ya abierto (vigilante del PC: mas rapido).
+    Con `agendar`, si aparece el tramite objetivo sigue en la misma pagina hasta agendar."""
     if nav is None:
         with sync_playwright() as p:
             navegador = p.chromium.launch(headless=True)
             try:
-                return revisar(navegador)
+                return revisar(navegador, agendar)
             finally:
                 navegador.close()
     r = {"fecha": datetime.now(COLOMBIA).strftime("%Y-%m-%d %H:%M"), "origen": ORIGEN,
@@ -157,9 +176,16 @@ def revisar(nav=None):
         elif resultado:
             r["hay_cupo"] = True
             r["tramites"] = resultado
-            r["bogota"] = any("bogot" in t.lower() for t in resultado)
-            r["detalle"] = "HAY CUPO en " + ("Bogota" if r["bogota"] else "otra ciudad")
+            r["objetivo"] = any(es_objetivo(t) for t in resultado)
+            r["detalle"] = "HAY CUPO de " + ("tu tramite (Bogota vehiculos)" if r["objetivo"] else "otro tramite")
             page.screenshot(path=str(BASE / "cupo_encontrado.png"), full_page=True)
+            if r["objetivo"] and agendar:  # sin perder segundos: seguir en esta misma pagina
+                notificar("Hay cita DIAN de TU trámite (Bogotá vehículos)",
+                          f"[{ORIGEN}] {r['fecha']} Apareció el cupo. Intentando agendar ya en tu PC...", "urgent")
+                if str(BASE) not in sys.path:  # el lanzador corre con -I: la carpeta no esta en la ruta
+                    sys.path.insert(0, str(BASE))
+                import agendar_auto
+                r["agendamiento"] = agendar_auto.continuar(page, visible=False)
         else:
             page.screenshot(path=str(BASE / "sin_respuesta.png"), full_page=True)
             raise RuntimeError("La DIAN no respondio en 60 s (seguia 'Cargando')")
@@ -228,23 +254,21 @@ def horario_oficina(ahora):
 
 def vigilar():
     """Vigilante del PC: proceso continuo que revisa cada 1 min en horario de oficina y cada 5 min
-    el resto, reutilizando el navegador. Si aparece cupo en Bogota lanza agendar_auto.py."""
-    agendador, ultimo_lanzamiento = None, 0.0
+    el resto, reutilizando el navegador. Si aparece el tramite objetivo agenda en la misma pagina
+    (no vuelve a intentarlo antes de 2 min, ni nunca mas si ya quedo agendada)."""
+    ultimo_intento = 0.0
     with sync_playwright() as p:
         nav, abierto_desde = p.chromium.launch(headless=True), time.monotonic()
         while True:
+            agendar = (not (BASE / "cita_agendada.json").exists()
+                       and time.monotonic() - ultimo_intento > 120)
             try:
-                r = una_revision(nav)
+                r = una_revision(nav, agendar)
+                if r.get("agendamiento"):
+                    ultimo_intento = time.monotonic()
             except Exception as e:  # navegador caido: se reabre
                 print(f"Reiniciando navegador: {e}", flush=True)
-                r = None
                 abierto_desde = 0.0
-            libre = agendador is None or agendador.poll() is not None
-            if r and r.get("bogota") and libre and time.monotonic() - ultimo_lanzamiento > 300:
-                with (BASE / "agendar_auto.log").open("a", encoding="utf-8") as salida:
-                    agendador = subprocess.Popen([sys.executable, "-I", str(BASE / "agendar_auto.py")],
-                                                 cwd=BASE, stdout=salida, stderr=subprocess.STDOUT)
-                ultimo_lanzamiento = time.monotonic()
             if time.monotonic() - abierto_desde > 2 * 3600:  # renovar el navegador cada 2 h
                 try:
                     nav.close()
@@ -270,10 +294,10 @@ def main():
         una_revision()
 
 
-def una_revision(nav=None):
+def una_revision(nav=None, agendar=False):
     hist = leer_historial()
     for intento in range(2):  # la pagina de la DIAN a veces no carga a la primera
-        r = revisar(nav)
+        r = revisar(nav, agendar)
         if not r["detalle"].startswith("ERROR"):
             break
         print(f"Intento {intento + 1} con error: {r['detalle']}")
@@ -285,14 +309,13 @@ def una_revision(nav=None):
     previo = next((h["detalle"] for h in reversed(hist) if h.get("origen", "PC") == ORIGEN), "")
     if r["hay_cupo"] and previo != r["detalle"]:
         tramites = f" Trámites: {', '.join(r['tramites'])}." if r.get("tramites") else ""
-        if r.get("bogota"):  # alarma solo para Bogota
-            accion = ("Abriendo el formulario en tu PC para agendar automáticamente." if vigilando_pc()
-                      else "Agenda YA: los cupos se agotan rápido.")
-            notificar("Hay citas DIAN en BOGOTÁ - Devoluciones",
-                      f"[{ORIGEN}] {r['fecha']} Hay disponibilidad en Videoatención > Devoluciones.{tramites} {accion}",
-                      "urgent")
+        if r.get("objetivo"):  # alarma solo para el tramite objetivo
+            if not r.get("agendamiento"):  # si se intento agendar, ese flujo ya aviso
+                notificar("Hay cita DIAN de TU trámite (Bogotá vehículos)",
+                          f"[{ORIGEN}] {r['fecha']} Videoatención > Devoluciones.{tramites} Agenda YA: dura segundos.",
+                          "urgent")
         else:
-            notificar("Cupo DIAN en otra ciudad (no Bogotá)",
+            notificar("Cupo DIAN de otro trámite",
                       f"[{ORIGEN}] {r['fecha']} Videoatención > Devoluciones.{tramites}")
     elif r["detalle"].startswith("ERROR"):
         # avisar una sola vez por racha: justo en el 3er error seguido, no en los siguientes
